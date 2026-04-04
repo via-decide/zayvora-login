@@ -1,7 +1,7 @@
 import { isValidEmail } from './utils.js';
 
 (function() {
-    const AUTH_KEY = 'simple_app_auth_token';
+    const AUTH_KEY = 'zayvora_auth_jwt';
     const APP_CONTENT_WRAPPER_ID = 'mainAppContentWrapper';
     const LOGIN_FORM_ID = 'authLoginForm';
     const LOGOUT_BUTTON_ID = 'authLogoutButton';
@@ -30,16 +30,16 @@ import { isValidEmail } from './utils.js';
     /**
      * Attempts to log in using the API.
      */
-    async function login(email, password) {
+    async function login(username, password) {
         try {
-            const response = await fetch('/api/login', {
+            const response = await fetch('/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email, password })
+                body: JSON.stringify({ username, password })
             });
             const data = await response.json();
             if (response.ok) {
-                setAuthToken(data.userId); // In a real app, this would be a JWT
+                setAuthToken(data.token);
                 console.log(`Auth: User logged in successfully.`);
                 return true;
             } else {
@@ -54,9 +54,10 @@ import { isValidEmail } from './utils.js';
 
     async function register(formData) {
         try {
-            const response = await fetch('/api/register', {
+            const response = await fetch('/auth/register', {
                 method: 'POST',
-                body: formData // Send as FormData for file upload
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(formData)
             });
             const data = await response.json();
             return { success: response.ok, message: data.message };
@@ -101,6 +102,11 @@ import { isValidEmail } from './utils.js';
      * Updates the UI to reflect the logged-out state.
      */
     function logout() {
+        const token = getAuthToken();
+        fetch('/auth/logout', {
+            method: 'POST',
+            headers: token ? { Authorization: `Bearer ${token}` } : {}
+        }).catch(() => {});
         removeAuthToken();
         console.log('Auth: User logged out.');
         renderAuthUI(); // Update UI to show login form
@@ -156,7 +162,7 @@ import { isValidEmail } from './utils.js';
 
         // Attach event listener for login submission
         document.getElementById('loginSubmit').onclick = async () => {
-            const username = document.getElementById('username').value;
+            const username = document.getElementById('username').value.trim().toLowerCase();
             const password = document.getElementById('password').value;
             const errorDiv = document.getElementById(LOGIN_ERROR_ID);
 
@@ -249,15 +255,11 @@ import { isValidEmail } from './utils.js';
         form.className = 'container';
         form.innerHTML = `
             <h2>Register</h2>
-            <p style="margin-bottom: 15px; color: #555; font-size: 14px;">Only Indian university emails (.ac.in or .edu.in) are allowed.</p>
+            <p style="margin-bottom: 15px; color: #555; font-size: 14px;">Use your Zayvora username/email and a strong password.</p>
             <input type="text" id="regFirstName" placeholder="First Name">
             <input type="text" id="regLastName" placeholder="Last Name">
-            <input type="text" id="regEmail" placeholder="University Email (.ac.in or .edu.in)">
+            <input type="text" id="regEmail" placeholder="Username or Email">
             <input type="password" id="regPassword" placeholder="Password">
-            <div style="margin-bottom: 15px;">
-                <label for="regStudentId" style="display: block; margin-bottom: 5px; color: #555;">Upload Student ID (Image/PDF):</label>
-                <input type="file" id="regStudentId" accept="image/*,.pdf" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px;">
-            </div>
             <button id="registerSubmit">Register</button>
             <p style="text-align: center; margin-top: 15px;">
                 Already have an account? <a href="#" id="backToLoginFromReg" style="color: #007bff; text-decoration: none;">Login</a>
@@ -271,43 +273,21 @@ import { isValidEmail } from './utils.js';
             const lastName = document.getElementById('regLastName').value;
             const email = document.getElementById('regEmail').value;
             const password = document.getElementById('regPassword').value;
-            const studentIdFile = document.getElementById('regStudentId').files[0];
             const msgDiv = document.getElementById('registerMessage');
-
-            if (!isValidEmail(email)) {
-                msgDiv.style.color = 'red';
-                msgDiv.textContent = 'Please enter a valid email address.';
-                return;
-            }
-
-            const lowerEmail = email.toLowerCase();
-            if (!lowerEmail.endsWith('.ac.in') && !lowerEmail.endsWith('.edu.in')) {
-                msgDiv.style.color = 'red';
-                msgDiv.textContent = 'Only Indian university emails (.ac.in or .edu.in) are acceptable.';
-                return;
-            }
-
-            if (!studentIdFile) {
-                msgDiv.style.color = 'red';
-                msgDiv.textContent = 'Please upload your Student ID document.';
-                return;
-            }
 
             if (!password || !firstName) {
                 msgDiv.style.color = 'red';
-                msgDiv.textContent = 'First name and password are required.';
+                msgDiv.textContent = 'First name and password are required (minimum 10 characters).';
                 return;
             }
 
             msgDiv.style.color = '#333';
             msgDiv.textContent = 'Registering...';
 
-            const formData = new FormData();
-            formData.append('first_name', firstName);
-            formData.append('last_name', lastName);
-            formData.append('email', email);
-            formData.append('password', password);
-            formData.append('studentId', studentIdFile);
+            const formData = {
+                username: email.trim().toLowerCase(),
+                password
+            };
 
             const result = await register(formData);
             if (result.success) {
