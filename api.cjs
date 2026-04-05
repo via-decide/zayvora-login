@@ -32,6 +32,21 @@ function ensureDatabase() {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
+
+  sqliteExec(`
+    CREATE TABLE IF NOT EXISTS early_access_applications (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      company TEXT NOT NULL,
+      team_size TEXT NOT NULL,
+      use_case TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      access_token TEXT,
+      access_token_expires TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      approved_at TEXT
+    );
+  `);
 }
 
 function securityHeaders(req, res, next) {
@@ -89,6 +104,11 @@ app.use(securityHeaders);
 app.use(corsMiddleware);
 app.use(express.json({ limit: '16kb' }));
 app.use(express.static(__dirname));
+
+// Route for early access landing page
+app.get('/early-access', (req, res) => {
+  res.sendFile(path.join(__dirname, 'early-access.html'));
+});
 
 app.post('/auth/register', authRateLimit, async (req, res) => {
   const { username, password } = req.body;
@@ -174,6 +194,174 @@ app.post('/api/commands', authGuard, (req, res) => {
     requestId: crypto.randomUUID(),
     command: command.trim(),
   });
+});
+
+// Early Access Application Endpoints
+app.post('/api/early-access/apply', async (req, res) => {
+  const { email, company, team_size, use_case } = req.body;
+
+  // Validation
+  if (!email || !company || !team_size || !use_case) {
+    return res.status(400).json({ message: 'All fields are required.' });
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email.trim())) {
+    return res.status(400).json({ message: 'Invalid email address.' });
+  }
+
+  if (company.trim().length < 2 || company.trim().length > 100) {
+    return res.status(400).json({ message: 'Company name must be 2-100 characters.' });
+  }
+
+  if (use_case.trim().length < 10 || use_case.trim().length > 500) {
+    return res.status(400).json({ message: 'Use case must be 10-500 characters.' });
+  }
+
+  try {
+    const applicationId = crypto.randomUUID();
+    const normalizedEmail = email.trim().toLowerCase();
+
+    sqliteExec(
+      'INSERT INTO early_access_applications (id, email, company, team_size, use_case, status) VALUES (?, ?, ?, ?, ?, ?);',
+      [applicationId, normalizedEmail, company.trim(), team_size, use_case.trim(), 'pending']
+    );
+
+    console.log(`[Zayvora-EarlyAccess] New application: ${normalizedEmail} (${applicationId})`);
+
+    return res.status(201).json({
+      message: 'Application submitted successfully. You will receive a decision email within 24 hours.',
+      application_id: applicationId,
+    });
+  } catch (error) {
+    if (String(error.message).includes('UNIQUE constraint failed')) {
+      return res.status(409).json({ message: 'This email has already applied for early access.' });
+    }
+    console.error('Early access application error:', error);
+    return res.status(500).json({ message: 'Unable to process application.' });
+  }
+});
+
+app.get('/api/early-access/status/:email', (req, res) => {
+  const { email } = req.params;
+
+  if (!email || email.trim().length === 0) {
+    return res.status(400).json({ message: 'Email is required.' });
+  }
+
+  try {
+    const normalizedEmail = email.trim().toLowerCase();
+    const row = sqliteExec('SELECT id, email, company, status, access_token, created_at FROM early_access_applications WHERE email = ?;', [normalizedEmail]);
+
+    if (!row) {
+      return res.status(404).json({ message: 'No application found for this email.' });
+    }
+
+    const [id, storedEmail, company, status, accessToken, createdAt] = row.split('|');
+
+    return res.status(200).json({
+      application_id: id,
+      email: storedEmail,
+      company,
+      status,
+      access_token: status === 'approved' ? accessToken : null,
+      created_at: createdAt,
+    });
+  } catch (error) {
+    console.error('Early access status error:', error);
+    return res.status(500).json({ message: 'Unable to fetch application status.' });
+  }
+});
+
+app.post('/api/early-access/admin/approve', (req, res) => {
+  const { email, admin_key } = req.body;
+
+  // Simple admin key check (use env variable in production)
+  const adminKey = process.env.ZAYVORA_ADMIN_KEY || 'dev-admin-key-change-in-production';
+  if (admin_key !== adminKey) {
+    return res.status(403).json({ message: 'Unauthorized.' });
+  }
+
+  if (!email || email.trim().length === 0) {
+    return res.status(400).json({ message: 'Email is required.' });
+  }
+
+  try {
+    const normalizedEmail = email.trim().toLowerCase();
+    const accessToken = `zayvora_ea_${crypto.randomBytes(32).toString('hex')}`;
+    const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(); // 1 year
+
+    sqliteExec(
+      'UPDATE early_access_applications SET status = ?, access_token = ?, access_token_expires = ?, approved_at = CURRENT_TIMESTAMP WHERE email = ?;',
+      ['approved', accessToken, expiresAt, normalizedEmail]
+    );
+
+    console.log(`[Zayvora-EarlyAccess-Admin] Application approved: ${normalizedEmail}`);
+
+    return res.status(200).json({
+      message: 'Application approved successfully.',
+      access_token: accessToken,
+      expires_at: expiresAt,
+    });
+  } catch (error) {
+    console.error('Early access approval error:', error);
+    return res.status(500).json({ message: 'Unable to approve application.' });
+  }
+});
+
+app.post('/api/early-access/admin/reject', (req, res) => {
+  const { email, admin_key, reason } = req.body;
+
+  const adminKey = process.env.ZAYVORA_ADMIN_KEY || 'dev-admin-key-change-in-production';
+  if (admin_key !== adminKey) {
+    return res.status(403).json({ message: 'Unauthorized.' });
+  }
+
+  if (!email || email.trim().length === 0) {
+    return res.status(400).json({ message: 'Email is required.' });
+  }
+
+  try {
+    const normalizedEmail = email.trim().toLowerCase();
+    sqliteExec(
+      'UPDATE early_access_applications SET status = ? WHERE email = ?;',
+      ['rejected', normalizedEmail]
+    );
+
+    console.log(`[Zayvora-EarlyAccess-Admin] Application rejected: ${normalizedEmail} (reason: ${reason || 'none'})`);
+
+    return res.status(200).json({ message: 'Application rejected.' });
+  } catch (error) {
+    console.error('Early access rejection error:', error);
+    return res.status(500).json({ message: 'Unable to reject application.' });
+  }
+});
+
+app.get('/api/early-access/admin/pending', (req, res) => {
+  const { admin_key } = req.query;
+
+  const adminKey = process.env.ZAYVORA_ADMIN_KEY || 'dev-admin-key-change-in-production';
+  if (admin_key !== adminKey) {
+    return res.status(403).json({ message: 'Unauthorized.' });
+  }
+
+  try {
+    const result = sqliteExec('SELECT id, email, company, team_size, use_case, created_at FROM early_access_applications WHERE status = ? ORDER BY created_at DESC;', ['pending']);
+
+    if (!result) {
+      return res.status(200).json({ applications: [] });
+    }
+
+    const applications = result.split('\n').map(row => {
+      const [id, email, company, team_size, use_case, createdAt] = row.split('|');
+      return { id, email, company, team_size, use_case, created_at: createdAt };
+    });
+
+    return res.status(200).json({ applications, count: applications.length });
+  } catch (error) {
+    console.error('Early access admin error:', error);
+    return res.status(500).json({ message: 'Unable to fetch pending applications.' });
+  }
 });
 
 app.use((err, req, res, next) => {
