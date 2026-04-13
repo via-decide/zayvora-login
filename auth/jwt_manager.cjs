@@ -2,15 +2,22 @@ const crypto = require('crypto');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'replace-this-in-production';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h';
+const JWT_ISSUER = process.env.JWT_ISSUER || 'via-passport-idp';
+const DEFAULT_AUDIENCE = process.env.JWT_AUDIENCE || 'via-ecosystem';
+const ALLOWED_AUDIENCES = (process.env.JWT_ALLOWED_AUDIENCES
+  || 'via-ecosystem,mars.daxini.space,orchard.daxini.space,skillhex.daxini.space,logichub.app'
+).split(',').map((value) => value.trim()).filter(Boolean);
 
-function generateToken(payload) {
+function generateToken(payload, options = {}) {
   const header = { alg: 'HS256', typ: 'JWT' };
   const nowSeconds = Math.floor(Date.now() / 1000);
-  const expSeconds = nowSeconds + parseExpiryToSeconds(JWT_EXPIRES_IN);
+  const expiry = options.expiresIn || JWT_EXPIRES_IN;
+  const expSeconds = nowSeconds + parseExpiryToSeconds(expiry);
+  const audience = options.audience || DEFAULT_AUDIENCE;
   const body = {
     ...payload,
-    iss: 'zayvora-login-gateway',
-    aud: 'zayvora-backend',
+    iss: JWT_ISSUER,
+    aud: audience,
     iat: nowSeconds,
     exp: expSeconds,
   };
@@ -20,7 +27,7 @@ function generateToken(payload) {
   return `${encodedHeader}.${encodedBody}.${signature}`;
 }
 
-function verifyToken(token) {
+function verifyToken(token, options = {}) {
   const parts = token.split('.');
   if (parts.length !== 3) throw new Error('Invalid token');
   const [encodedHeader, encodedBody, signature] = parts;
@@ -29,7 +36,8 @@ function verifyToken(token) {
 
   const payload = JSON.parse(base64UrlDecode(encodedBody));
   const nowSeconds = Math.floor(Date.now() / 1000);
-  if (payload.iss !== 'zayvora-login-gateway' || payload.aud !== 'zayvora-backend') throw new Error('Invalid token claims');
+  const audiences = options.allowedAudiences || ALLOWED_AUDIENCES;
+  if (payload.iss !== JWT_ISSUER || !audiences.includes(payload.aud)) throw new Error('Invalid token claims');
   if (typeof payload.exp !== 'number' || payload.exp <= nowSeconds) throw new Error('Token expired');
   return payload;
 }

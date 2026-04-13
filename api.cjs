@@ -6,7 +6,7 @@ const { execFileSync } = require('child_process');
 const bcrypt = require('bcrypt');
 
 const { generateToken } = require('./auth/jwt_manager.cjs');
-const { authGuard } = require('./auth/auth_guard.cjs');
+const { authGuard, verifyPassportToken } = require('./auth/auth_guard.cjs');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -47,6 +47,19 @@ function ensureDatabase() {
       approved_at TEXT
     );
   `);
+
+  sqliteExec(`
+    CREATE TABLE IF NOT EXISTS passport_users (
+      uid TEXT PRIMARY KEY,
+      passport_id TEXT NOT NULL UNIQUE,
+      email TEXT NOT NULL UNIQUE,
+      public_key TEXT,
+      pin_hash TEXT NOT NULL,
+      skill_matrix TEXT NOT NULL DEFAULT '{}',
+      entitlements TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
 }
 
 function securityHeaders(req, res, next) {
@@ -58,8 +71,16 @@ function securityHeaders(req, res, next) {
 }
 
 function corsMiddleware(req, res, next) {
-  const origin = process.env.CORS_ORIGIN || '*';
-  res.setHeader('Access-Control-Allow-Origin', origin);
+  const allowedOrigins = (process.env.CORS_ORIGINS
+    || 'https://mars.daxini.space,https://orchard.daxini.space,https://skillhex.daxini.space,https://logichub.app,http://localhost:3000'
+  ).split(',').map((value) => value.trim());
+  const requestOrigin = req.headers.origin;
+  if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
+    res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+    res.setHeader('Vary', 'Origin');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigins[0]);
+  }
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   if (req.method === 'OPTIONS') {
@@ -97,6 +118,15 @@ function isValidUsername(username) {
 
 function isValidPassword(password) {
   return typeof password === 'string' && password.length >= 10 && password.length <= 128;
+}
+
+function parseJsonColumn(value, fallback) {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
 }
 
 ensureDatabase();
@@ -180,6 +210,92 @@ app.post('/auth/logout', authGuard, (req, res) => {
 
 app.get('/auth/verify', authGuard, (req, res) => {
   res.status(200).json({ valid: true, user: req.authUser });
+});
+
+app.post('/api/passport/login', authRateLimit, async (req, res) => {
+  const { passport_id, pin } = req.body || {};
+  if (typeof passport_id !== 'string' || typeof pin !== 'string' || pin.length < 4) {
+    return res.status(400).json({ message: 'passport_id and pin are required.' });
+  }
+
+  try {
+    const row = sqliteExec(
+      'SELECT uid, passport_id, pin_hash, entitlements FROM passport_users WHERE passport_id = ?;',
+      [passport_id.trim()]
+    );
+    if (!row) {
+      return res.status(401).json({ message: 'Invalid passport_id or pin.' });
+    }
+
+    const [uid, storedPassportId, pinHash, entitlementsRaw] = row.split('|');
+    const pinMatches = await bcrypt.compare(pin, pinHash);
+    if (!pinMatches) {
+      return res.status(401).json({ message: 'Invalid passport_id or pin.' });
+    }
+
+    const entitlements = parseJsonColumn(entitlementsRaw, []);
+    const token = generateToken({ uid, passport_id: storedPassportId, entitlements }, { audience: 'via-ecosystem' });
+
+    return res.status(200).json({ token, uid, passport_id: storedPassportId, entitlements });
+  } catch (error) {
+    console.error('Passport login error:', error);
+    return res.status(500).json({ message: 'Unable to login with passport.' });
+  }
+});
+
+app.get('/api/passport/profile', verifyPassportToken, (req, res) => {
+  try {
+    const row = sqliteExec(
+      'SELECT uid, skill_matrix, entitlements FROM passport_users WHERE uid = ?;',
+      [req.passportUser.uid]
+    );
+    if (!row) {
+      return res.status(404).json({ message: 'Passport profile not found.' });
+    }
+    const [uid, skillMatrixRaw, entitlementsRaw] = row.split('|');
+    return res.status(200).json({
+      uid,
+      skill_matrix: parseJsonColumn(skillMatrixRaw, {}),
+      entitlements: parseJsonColumn(entitlementsRaw, []),
+    });
+  } catch (error) {
+    console.error('Passport profile error:', error);
+    return res.status(500).json({ message: 'Unable to fetch passport profile.' });
+  }
+});
+
+app.post('/api/passport/nfc-login', authRateLimit, async (req, res) => {
+  const { passport_id, pin } = req.body || {};
+  if (typeof passport_id !== 'string' || typeof pin !== 'string' || pin.length < 4) {
+    return res.status(400).json({ message: 'passport_id and pin are required for NFC login.' });
+  }
+
+  try {
+    const row = sqliteExec(
+      'SELECT uid, passport_id, pin_hash, entitlements FROM passport_users WHERE passport_id = ?;',
+      [passport_id.trim()]
+    );
+    if (!row) {
+      return res.status(401).json({ message: 'Invalid passport_id or pin.' });
+    }
+
+    const [uid, storedPassportId, pinHash, entitlementsRaw] = row.split('|');
+    const pinMatches = await bcrypt.compare(pin, pinHash);
+    if (!pinMatches) {
+      return res.status(401).json({ message: 'Invalid passport_id or pin.' });
+    }
+
+    const entitlements = parseJsonColumn(entitlementsRaw, []);
+    const token = generateToken(
+      { uid, passport_id: storedPassportId, entitlements, auth_method: 'nfc' },
+      { audience: 'via-ecosystem' }
+    );
+
+    return res.status(200).json({ token, uid, passport_id: storedPassportId, entitlements, auth_method: 'nfc' });
+  } catch (error) {
+    console.error('Passport NFC login error:', error);
+    return res.status(500).json({ message: 'Unable to perform NFC login.' });
+  }
 });
 
 app.post('/api/commands', authGuard, (req, res) => {
