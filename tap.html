@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zayvora Passport Tap Login</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    body { margin: 0; padding: 24px; }
+    .tap-shell { max-width: 560px; margin: 32px auto; background: #fff; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); padding: 24px; }
+    .tap-title { margin-bottom: 8px; }
+    .tap-subtitle { color: #4f5b67; margin-bottom: 18px; }
+    .tap-actions { display: flex; gap: 12px; margin-bottom: 12px; }
+    .tap-actions button { flex: 1; }
+    .tap-status { margin: 12px 0; padding: 10px; border-radius: 6px; background: #f6f8fa; min-height: 40px; }
+    .hidden { display: none; }
+    .uid-field { margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <main class="tap-shell">
+    <h1 class="tap-title">Passport Tap Login</h1>
+    <p class="tap-subtitle">Tap your NFC passport card to authenticate. If NFC is unavailable, enter UID manually.</p>
+
+    <div class="tap-actions">
+      <button id="startNfc" class="btn btn-primary">Tap Card</button>
+      <button id="logoutBtn" class="btn btn-secondary">Logout</button>
+    </div>
+
+    <div id="status" class="tap-status">Ready to scan.</div>
+
+    <section id="manualSection" class="uid-field hidden">
+      <label class="form-label" for="uidInput">Manual UID</label>
+      <input id="uidInput" class="form-control" type="text" placeholder="Enter passport UID">
+      <button id="manualVerify" class="btn btn-outline-primary" style="margin-top: 10px; width: 100%;">Verify UID</button>
+    </section>
+  </main>
+
+  <script type="module" src="tap.js"></script>
+</body>
+</html>
