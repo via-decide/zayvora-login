@@ -140,6 +140,10 @@ app.get('/early-access', (req, res) => {
   res.sendFile(path.join(__dirname, 'early-access.html'));
 });
 
+app.get('/tap', (req, res) => {
+  res.sendFile(path.join(__dirname, 'tap.html'));
+});
+
 app.post('/auth/register', authRateLimit, async (req, res) => {
   const { username, password } = req.body;
 
@@ -296,6 +300,49 @@ app.post('/api/passport/nfc-login', authRateLimit, async (req, res) => {
     console.error('Passport NFC login error:', error);
     return res.status(500).json({ message: 'Unable to perform NFC login.' });
   }
+});
+
+
+app.post('/passport/verify', authRateLimit, (req, res) => {
+  const { uid } = req.body || {};
+  if (typeof uid !== 'string' || uid.trim().length === 0) {
+    return res.status(400).json({ message: 'uid is required.' });
+  }
+
+  try {
+    const row = sqliteExec(
+      'SELECT uid, passport_id, entitlements FROM passport_users WHERE uid = ?;',
+      [uid.trim()]
+    );
+    if (!row) {
+      return res.status(401).json({ message: 'Passport not recognized.' });
+    }
+
+    const [storedUid, passportId, entitlementsRaw] = row.split('|');
+    const entitlements = parseJsonColumn(entitlementsRaw, []);
+    const token = generateToken(
+      { uid: storedUid, passport_id: passportId, entitlements, auth_method: 'nfc_uid' },
+      { audience: 'via-ecosystem' }
+    );
+
+    return res.status(200).json({
+      message: 'Passport verified.',
+      token,
+      uid: storedUid,
+      passport_id: passportId,
+      entitlements,
+    });
+  } catch (error) {
+    console.error('Passport verify error:', error);
+    return res.status(500).json({ message: 'Unable to verify passport.' });
+  }
+});
+
+app.post('/passport/logout', verifyPassportToken, (req, res) => {
+  return res.status(200).json({
+    message: 'Passport session ended. Remove token on the client.',
+    uid: req.passportUser.uid,
+  });
 });
 
 app.post('/api/commands', authGuard, (req, res) => {
